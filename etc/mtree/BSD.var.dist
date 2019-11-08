@@ -5,7 +5,7 @@
 
 /set type=dir uname=root gname=wheel mode=0755 tags=package=runtime
 .
-    account
+    account             mode=0750
     ..
     at
 /set uname=daemon
@@ -84,7 +84,7 @@
     rwho            gname=daemon mode=0775
     ..
     spool
-        clientmqueue	uname=smmsp gname=smmsp mode=0770 tags=package=sendmail
+        clientmqueue    uname=smmsp gname=smmsp mode=0770 tags=package=sendmail
         ..
         dma             uname=root gname=mail mode=0770 tags=package=dma
         ..
@@ -93,9 +93,9 @@
 /set gname=daemon
         lpd
         ..
-        mqueue		tags=package=sendmail
+        mqueue          tags=package=sendmail
         ..
-        opielocks	mode=0700
+        opielocks       mode=0700
         ..
         output
             lpd

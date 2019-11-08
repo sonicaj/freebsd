@@ -390,7 +390,6 @@ cpu_reset(void)
 			mb = &pcpu_find(0)->pc_monitorbuf;
 			atomic_store_int(&mb->stop_state,
 			    MONITOR_STOPSTATE_RUNNING);
-			wmb();
 
 			cnt = 0;
 			while (cpu_reset_proxy_active == 0 && cnt < 10000000) {
@@ -939,7 +938,6 @@ int hw_mds_disable;
  * architectural state except possibly %rflags. Also, it is always
  * called with interrupts disabled.
  */
-void (*mds_handler)(void);
 void mds_handler_void(void);
 void mds_handler_verw(void);
 void mds_handler_ivb(void);
@@ -948,6 +946,7 @@ void mds_handler_skl_sse(void);
 void mds_handler_skl_avx(void);
 void mds_handler_skl_avx512(void);
 void mds_handler_silvermont(void);
+void (*mds_handler)(void) = mds_handler_void;
 
 static int
 sysctl_hw_mds_disable_state_handler(SYSCTL_HANDLER_ARGS)

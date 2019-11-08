@@ -87,7 +87,8 @@ __FBSDID("$FreeBSD$");
 static void	trap_fatal(struct trapframe *frame);
 static void	printtrap(u_int vector, struct trapframe *frame, int isfatal,
 		    int user);
-static int	trap_pfault(struct trapframe *frame, int user);
+static bool	trap_pfault(struct trapframe *frame, bool user, int *signo,
+		    int *ucode);
 static int	fix_unaligned(struct thread *td, struct trapframe *frame);
 static int	handle_onfault(struct trapframe *frame);
 static void	syscall(struct trapframe *frame);
@@ -269,9 +270,8 @@ trap(struct trapframe *frame)
 #endif
 		case EXC_DSI:
 		case EXC_ISI:
-			sig = trap_pfault(frame, 1);
-			if (sig == SIGSEGV)
-				ucode = SEGV_MAPERR;
+			if (trap_pfault(frame, true, &sig, &ucode))
+				sig = 0;
 			break;
 
 		case EXC_SC:
@@ -295,7 +295,7 @@ trap(struct trapframe *frame)
 			    ("VSX already enabled for thread"));
 			if (!(td->td_pcb->pcb_flags & PCB_VEC))
 				enable_vec(td);
-			if (!(td->td_pcb->pcb_flags & PCB_FPU))
+			if (td->td_pcb->pcb_flags & PCB_FPU)
 				save_fpu(td);
 			td->td_pcb->pcb_flags |= PCB_VSX;
 			enable_fpu(td);
@@ -460,7 +460,7 @@ trap(struct trapframe *frame)
 			break;
 #endif
 		case EXC_DSI:
-			if (trap_pfault(frame, 0) == 0)
+			if (trap_pfault(frame, false, NULL, NULL))
  				return;
 			break;
 		case EXC_MCHK:
@@ -700,7 +700,6 @@ void
 syscall(struct trapframe *frame)
 {
 	struct thread *td;
-	int error;
 
 	td = curthread;
 	td->td_frame = frame;
@@ -715,14 +714,14 @@ syscall(struct trapframe *frame)
 		    "r"(td->td_pcb->pcb_cpu.aim.usr_vsid), "r"(USER_SLB_SLBE));
 #endif
 
-	error = syscallenter(td);
-	syscallret(td, error);
+	syscallenter(td);
+	syscallret(td);
 }
 
-static int
-trap_pfault(struct trapframe *frame, int user)
+static bool
+trap_pfault(struct trapframe *frame, bool user, int *signo, int *ucode)
 {
-	vm_offset_t	eva, va;
+	vm_offset_t	eva;
 	struct		thread *td;
 	struct		proc *p;
 	vm_map_t	map;
@@ -754,28 +753,27 @@ trap_pfault(struct trapframe *frame, int user)
 	} else {
 		rv = pmap_decode_kernel_ptr(eva, &is_user, &eva);
 		if (rv != 0)
-			return (SIGSEGV);
+			return (false);
 
 		if (is_user)
 			map = &p->p_vmspace->vm_map;
 		else
 			map = kernel_map;
 	}
-	va = trunc_page(eva);
 
 	/* Fault in the page. */
-	rv = vm_fault(map, va, ftype, VM_FAULT_NORMAL);
+	rv = vm_fault_trap(map, eva, ftype, VM_FAULT_NORMAL, signo, ucode);
 	/*
 	 * XXXDTRACE: add dtrace_doubletrap_func here?
 	 */
 
 	if (rv == KERN_SUCCESS)
-		return (0);
+		return (true);
 
 	if (!user && handle_onfault(frame))
-		return (0);
+		return (true);
 
-	return (SIGSEGV);
+	return (false);
 }
 
 /*
@@ -788,7 +786,7 @@ static int
 fix_unaligned(struct thread *td, struct trapframe *frame)
 {
 	struct thread	*fputhread;
-#ifdef	__SPE__
+#ifdef BOOKE
 	uint32_t	inst;
 #endif
 	int		indicator, reg;
@@ -799,7 +797,7 @@ fix_unaligned(struct thread *td, struct trapframe *frame)
 	if (indicator & ESR_SPE) {
 		if (copyin((void *)frame->srr0, &inst, sizeof(inst)) != 0)
 			return (-1);
-		reg = EXC_ALI_SPE_REG(inst);
+		reg = EXC_ALI_INST_RST(inst);
 		fpr = (double *)td->td_pcb->pcb_vec.vr[reg];
 		fputhread = PCPU_GET(vecthread);
 
@@ -829,12 +827,22 @@ fix_unaligned(struct thread *td, struct trapframe *frame)
 		return (0);
 	}
 #else
+#ifdef BOOKE
+	indicator = (frame->cpu.booke.esr & ESR_ST) ? EXC_ALI_STFD : EXC_ALI_LFD;
+#else
 	indicator = EXC_ALI_OPCODE_INDICATOR(frame->cpu.aim.dsisr);
+#endif
 
 	switch (indicator) {
 	case EXC_ALI_LFD:
 	case EXC_ALI_STFD:
+#ifdef BOOKE
+		if (copyin((void *)frame->srr0, &inst, sizeof(inst)) != 0)
+			return (-1);
+		reg = EXC_ALI_INST_RST(inst);
+#else
 		reg = EXC_ALI_RST(frame->cpu.aim.dsisr);
+#endif
 		fpr = &td->td_pcb->pcb_fpu.fpr[reg].fpr;
 		fputhread = PCPU_GET(fputhread);
 
